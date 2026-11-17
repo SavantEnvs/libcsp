@@ -1,0 +1,86 @@
+/*
+ * Small Fragmentation Protocol receive: every connection accepted from the
+ * raw packets is handed to csp_sfp_recv(), which parses each fragment's
+ * offset/total-size trailer and calls the user write callback to reassemble.
+ * Input: [opt] then records of [frame length][frame: CSP header + payload]
+ * (set CSP_FFRAG / the SFP trailer to get past the first check).
+ */
+#include "fuzz_common.h"
+#include <csp/csp_sfp.h>
+
+static csp_iface_t fuzz_iface = {
+	.name = "FUZZ", .addr = 1, .netmask = 4, .is_default = 1,
+	.nexthop = fuzz_nexthop,
+};
+
+typedef struct {
+	uint8_t * buf;
+	uint32_t total;
+} sfp_sink_t;
+
+/* Reassemble into a buffer of the announced total size, as a file-receiving
+ * application would; SFP guarantees offset + size <= totalsz. */
+static int sfp_write(const uint8_t * buffer, uint32_t size, uint32_t offset, uint32_t totalsz, void * data) {
+	sfp_sink_t * sink = data;
+	if (sink->buf == NULL) {
+		if (totalsz == 0 || totalsz > (1u << 20)) {
+			return CSP_ERR_NOMEM;
+		}
+		sink->buf = malloc(totalsz);
+		sink->total = totalsz;
+	}
+	if (totalsz != sink->total) {
+		return CSP_ERR_INVAL;
+	}
+	memcpy(sink->buf + offset, buffer, size);
+	return CSP_ERR_NONE;
+}
+
+static void sfp_conn(csp_conn_t * conn) {
+	sfp_sink_t sink = {0};
+	csp_sfp_recv_t user = {.data = &sink, .write = sfp_write};
+	csp_sfp_recv(conn, &user, 0);
+	free(sink.buf);
+}
+
+int LLVMFuzzerInitialize(int * argc, char *** argv) {
+	(void)argc; (void)argv;
+	fuzz_csp_init();
+	csp_iflist_add(&fuzz_iface);
+	g_conn_fn = sfp_conn;
+	return 0;
+}
+
+int LLVMFuzzerTestOneInput(const uint8_t * data, size_t size) {
+	if (size < 1) {
+		return -1;
+	}
+	fuzz_select_conf(data[0]);
+	data++; size--;
+	/* queue every packet first, so one connection sees all its fragments */
+	while (size >= 1) {
+		size_t len = data[0];
+		data++; size--;
+		if (len > size) {
+			len = size;
+		}
+		csp_packet_t * packet = csp_buffer_get(0);
+		if (packet == NULL) {
+			break;
+		}
+		int header_size = csp_id_setup_rx(packet);
+		size_t max = sizeof(packet->data) + (size_t)header_size;
+		size_t n = len < max ? len : max;
+		memcpy(packet->frame_begin, data, n);
+		packet->frame_length = (uint16_t)n;
+		if (csp_id_strip(packet) != 0) {
+			csp_buffer_free(packet);
+		} else {
+			csp_qfifo_write(packet, &fuzz_iface, NULL);
+		}
+		data += len; size -= len;
+	}
+	fuzz_drain();
+	fuzz_reset_state();
+	return 0;
+}

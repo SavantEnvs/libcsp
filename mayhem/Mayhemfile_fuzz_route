@@ -1,0 +1,11 @@
+project: savantenvs/libcsp
+target: fuzz_route
+
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar
+  - file://mayhem/fuzz_route/testsuite
+
+cmds:
+  - cmd: /mayhem/fuzz_route
+    libfuzzer: true
+    timeout: 5

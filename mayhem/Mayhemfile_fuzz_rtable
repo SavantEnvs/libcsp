@@ -1,0 +1,11 @@
+project: savantenvs/libcsp
+target: fuzz_rtable
+
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar
+  - file://mayhem/fuzz_rtable/testsuite
+
+cmds:
+  - cmd: /mayhem/fuzz_rtable
+    libfuzzer: true
+    timeout: 5
